@@ -28,6 +28,7 @@ data class NativeProfileDocument(
     val cred: CredTemplate,
     val kernelOffset: KernelOffsetTable,
     val kernelPhysLoad: ULong?,
+    val kernelPhysOffset: ULong?,
     val compactWaiter: UByte?,
     /** vr_guard.tracepoint_funcs, when the image's BTF yielded it. */
     val vrGuardTracepointFuncs: UInt?,
@@ -229,6 +230,7 @@ data class NativeProfileDocument(
     private fun kernelSection(): Section? {
         val entries = buildList {
             kernelPhysLoad?.let { add("kernel_phys_load" to it) }
+            kernelPhysOffset?.let { add("kernel_phys_offset" to it) }
             compactWaiter?.let { add("compact_waiter" to it.toULong()) }
             kernelsnitchCollisions?.let { add("kernelsnitch_collisions" to it.toULong()) }
             mmStructSz?.let { add("mm_struct_sz" to it.toULong()) }
@@ -424,6 +426,7 @@ data class NativeProfileDocument(
                     vrSysExitTp = vul("offset.vr_sys_exit_tp"),
                 ),
                 kernelPhysLoad = vulOrNull("kernel_phys_load"),
+                kernelPhysOffset = vulOrNull("kernel_phys_offset"),
                 compactWaiter = vbOrNull("compact_waiter"),
                 vrGuardTracepointFuncs = vuOrNull("vr_guard.tracepoint_funcs"),
                 kernelsnitchCollisions = vuOrNull("kernelsnitch.collisions"),
@@ -474,6 +477,7 @@ data class NativeProfileDocument(
             private var credential = CredTemplate()
             private var offsets = KernelOffsetTable()
             private var kernelPhysLoad: ULong? = null
+            private var kernelPhysOffset: ULong? = null
             private var compactWaiter: UByte? = null
             private var kernelsnitchCollisions: UInt? = null
             private var mmStructSz: UInt? = null
@@ -553,6 +557,7 @@ data class NativeProfileDocument(
 
                     "kernel" -> when (key) {
                         "kernel_phys_load" -> kernelPhysLoad = raw
+                        "kernel_phys_offset" -> kernelPhysOffset = raw
                         "compact_waiter" -> compactWaiter = raw.toUByte()
                         "kernelsnitch_collisions" -> kernelsnitchCollisions = raw.toUInt()
                         "mm_struct_sz" -> mmStructSz = raw.toUInt()
@@ -638,6 +643,7 @@ data class NativeProfileDocument(
                 cred = credential,
                 kernelOffset = offsets,
                 kernelPhysLoad = kernelPhysLoad,
+                kernelPhysOffset = kernelPhysOffset,
                 compactWaiter = compactWaiter,
                 kernelsnitchCollisions = kernelsnitchCollisions,
                 mmStructSz = mmStructSz,

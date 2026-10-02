@@ -110,6 +110,11 @@ namespace ghostlock::profile {
 
     struct KernelMisc {
         std::optional<uint64_t> kernel_phys_load;
+        /* DRAM base (linear-map PHYS_OFFSET) used for image->direct-map
+         * translation. Absence falls back to the compiled P0_PHYS_OFFSET, so
+         * devices whose DRAM base differs from the built-in default can
+         * override it without a rebuild. */
+        std::optional<uint64_t> kernel_phys_offset;
         std::optional<uint8_t> compact_waiter;
         /* Ancillary vr.ko guard, occupying this struct's existing padding so the
          * frozen session offsets do not move: the gate (fail closed), the
