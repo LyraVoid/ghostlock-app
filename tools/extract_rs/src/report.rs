@@ -206,6 +206,8 @@ fn conf_offsets(
         ("slide_nfulnl_logger", symbol("off_slide_nfulnl_logger")),
         ("slide_boot_id", symbol("off_slide_boot_id")),
         ("slide_loggers_0_1", symbol("off_slide_loggers_0_1")),
+        // Ancillary vr.ko guard: the tracepoint the vendor probe hangs off.
+        ("vr_sys_exit_tp", symbol("off_vr_sys_exit_tp")),
     ]
     .into_iter()
     .filter_map(|(key, value)| value.map(|value| (key.to_string(), value)))
@@ -317,6 +319,33 @@ pub fn render_conf(input: &ConfInputs<'_>) -> String {
     let offset = conf_offsets(input.symbols, input.extra_offsets);
     push_conf_block(&mut lines, "offset", &offset);
 
+    // Ancillary vr.ko guard. The gate mirrors recommend_shizuku: it says the
+    // profile enables the behavior; whether vr.ko is on the running device is a
+    // separate decision, taken there (see docs/analysis/ancillary-controller-guide.md).
+    // Both facts are per-image and come from this image's BTF — nothing here
+    // reads the kernel release. The layout travels as a u8, so an offset that
+    // does not fit is dropped instead of being narrowed to a different member;
+    // without the layout the guard stays off (fail closed).
+    if let Some(funcs) = input
+        .structs
+        .get("vr_tracepoint_funcs")
+        .copied()
+        .flatten()
+        .filter(|value| (1..=u8::MAX as u32).contains(value))
+    {
+        let gate = lines
+            .iter()
+            .position(|line| line.starts_with("recommend_shizuku"))
+            .map(|index| index + 1)
+            .unwrap_or(lines.len());
+        lines.insert(gate, "recommend_vr_guard = 1".to_string());
+        push_conf_block(
+            &mut lines,
+            "vr_guard",
+            &[("tracepoint_funcs".to_string(), funcs.to_string())],
+        );
+    }
+
     lines.join("\n") + "\n"
 }
 
@@ -345,9 +374,11 @@ pub fn optional_symbols() -> BTreeSet<&'static str> {
 }
 
 /// BTF struct fields a kernel may legitimately lack: the 5.15 GKI BTF has no
-/// `slab` type, so `struct_slab_cache` is missing there. Reported as missing,
-/// but not failing the extract.
-const OPTIONAL_STRUCT_FIELDS: &[&str] = &["struct_slab_cache"];
+/// `slab` type, so `struct_slab_cache` is missing there, and a stripped or
+/// vendor BTF may not describe `struct tracepoint` at all. Reported as missing,
+/// but not failing the extract — the consumers of these fields either carry a
+/// fallback or treat their absence as "feature off".
+const OPTIONAL_STRUCT_FIELDS: &[&str] = &["struct_slab_cache", "vr_tracepoint_funcs"];
 
 pub fn optional_struct_fields() -> BTreeSet<&'static str> {
     OPTIONAL_STRUCT_FIELDS.iter().copied().collect()
@@ -360,7 +391,7 @@ mod tests {
         conf_route_geometry, pselect_waiter_shift_for, render_conf,
     };
     use crate::derive::Cred5x;
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
 
     fn conf_fixture() -> (BTreeMap<String, Option<u64>>, BTreeMap<String, Option<u32>>) {
         let mut symbols: BTreeMap<String, Option<u64>> = BTreeMap::new();
@@ -376,6 +407,49 @@ mod tests {
 
     fn no_extra_offsets() -> ConfExtraOffsets {
         ConfExtraOffsets::default()
+    }
+
+    #[test]
+    fn conf_emits_the_vr_guard_only_when_the_layout_fits_the_transport() {
+        let (symbols, base_structs) = conf_fixture();
+        let geometry: Vec<(&'static str, i64)> = vec![("waiter_shift", -2)];
+        let render = |funcs: Option<Option<u32>>| {
+            let mut structs = base_structs.clone();
+            if let Some(value) = funcs {
+                structs.insert("vr_tracepoint_funcs".to_string(), value);
+            }
+            render_conf(&ConfInputs {
+                release: "6.1.145-android14-11-maybe-dirty",
+                phys: None,
+                symbols: &symbols,
+                structs: &structs,
+                route: Some("select_stack"),
+                route_geometry: &geometry,
+                cred: &conf_cred_6x(),
+                extra_offsets: &no_extra_offsets(),
+            })
+        };
+        let fitted = render(Some(Some(0x40)));
+        assert!(fitted.contains("recommend_vr_guard = 1"));
+        assert!(fitted.contains("vr_guard {\n  tracepoint_funcs = 64\n}"));
+        /* An offset that cannot travel in the u8 layout is dropped instead of
+         * being narrowed onto a different tracepoint member: guard off. */
+        for bad in [Some(Some(0x140u32)), Some(Some(0)), None] {
+            let out = render(bad);
+            assert!(!out.contains("vr_guard"));
+            assert!(!out.contains("recommend_vr_guard"));
+        }
+    }
+
+    #[test]
+    fn optional_struct_fields_cover_the_vr_guard_layout() {
+        let mut structs: BTreeMap<String, Option<u64>> = BTreeMap::new();
+        structs.insert("task_prio".to_string(), Some(132));
+        structs.insert("vr_tracepoint_funcs".to_string(), None);
+        /* A kernel whose BTF lacks `struct tracepoint` still extracts in every
+         * format: the guard layout is optional, the rest is required. */
+        assert!(super::require_fields(&structs, &super::optional_struct_fields()).is_ok());
+        assert!(super::require_fields(&structs, &BTreeSet::new()).is_err());
     }
 
     #[test]
